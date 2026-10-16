@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>إدارة الطلبات</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#10b981">
+<meta name="robots" content="noindex, nofollow">
+<style>
+*{box-sizing:border-box;font-family:Tahoma,Arial,sans-serif}
+body{margin:0;background:#f3f4f6;color:#1f2937}
+.hd{background:#10b981;color:#fff;padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top,0px));display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.hd h1{margin:0;font-size:18px}.hd button{background:rgba(255,255,255,.2);border:0;color:#fff;padding:7px 12px;border-radius:8px;font-size:14px;cursor:pointer;margin-inline-start:6px}
+.wrap{max-width:600px;margin:auto;padding:12px}
+.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px}
+.chip{flex:none;border:0;background:#fff;padding:7px 14px;border-radius:20px;font-size:14px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.chip.on{background:#10b981;color:#fff}
+.card{background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 5px rgba(0,0,0,.06);border-inline-start:5px solid #10b981}
+.card.new{border-color:#f59e0b}.card.cancelled{border-color:#ef4444;opacity:.75}.card.delivered{border-color:#9ca3af}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.num{font-weight:bold}.dt{color:#6b7280;font-size:13px}
+.card p{margin:6px 0;font-size:15px}.lbl{color:#6b7280}
+ul{margin:6px 0;padding-inline-start:20px}
+.tot{font-weight:bold;color:#047857;font-size:17px}
+.acts{display:flex;gap:8px;margin-top:10px}
+.acts a,.acts select{flex:1;text-align:center;padding:9px;border-radius:8px;border:0;color:#fff;text-decoration:none;font-size:14px;font-weight:bold}
+.call{background:#3b82f6}.wa{background:#25d366}
+.acts select{background:#fff;color:#1f2937;border:1px solid #d1d5db;font-weight:normal}
+.empty{text-align:center;color:#6b7280;padding:50px 10px}
+#login{max-width:340px;margin:18vh auto;background:#fff;padding:22px;border-radius:14px;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+#login input{width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px;font-size:16px;margin:12px 0}
+#login button{width:100%;padding:11px;border:0;border-radius:8px;background:#10b981;color:#fff;font-size:16px;cursor:pointer}
+#err{color:#dc2626;font-size:14px;min-height:20px}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+
+<div id="login" class="hide">
+  <h2 style="margin:0">📦 إدارة الطلبات</h2>
+  <input type="password" id="pw" placeholder="كلمة المرور" autocomplete="current-password">
+  <div id="err"></div>
+  <button id="go">دخول</button>
+</div>
+
+<div id="app" class="hide">
+  <div class="hd">
+    <h1>📦 الطلبات <span id="cnt"></span></h1>
+    <div><button id="ref">🔄</button><button id="out">خروج</button></div>
+  </div>
+  <div class="wrap">
+    <div class="chips" id="chips"></div>
+    <div id="list"></div>
+  </div>
+</div>
+
+<script>
+const API = 'api_orders.php';
+const PAY = {cod: 'عند الاستلام', bank: 'تحويل مصرفي'};
+let csrf = '', STATUS = {}, orders = [], seen = null, filter = 'all', ac = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(action, body) {
+  const r = await fetch(API + '?action=' + action, {
+    method: body ? 'POST' : 'GET', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: body ? JSON.stringify(body) : undefined, cache: 'no-store'
+  });
+  return {status: r.status, data: await r.json().catch(() => ({}))};
+}
+
+function beep() {
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    [880, 1175].forEach((f, i) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.value = f; o.connect(g); g.connect(ac.destination);
+      const t = ac.currentTime + i * .22;
+      g.gain.setValueAtTime(.25, t); g.gain.exponentialRampToValueAtTime(.001, t + .2);
+      o.start(t); o.stop(t + .2);
+    });
+  } catch (e) {}
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+}
+
+function waNumber(p) {
+  p = String(p).replace(/\D/g, '');
+  if (p.startsWith('00')) p = p.slice(2);
+  if (p.startsWith('0')) return '218' + p.slice(1);
+  if (p.length === 9) return '218' + p;
+  return p;
+}
+
+function show(loggedIn) {
+  $('login').classList.toggle('hide', loggedIn);
+  $('app').classList.toggle('hide', !loggedIn);
+  if (!loggedIn) $('pw').focus();
+}
+
+async function load() {
+  const {status, data} = await api('list');
+  if (status === 401) { show(false); return; }
+  if (!data.ok) return;
+  csrf = data.csrf; STATUS = data.status; orders = data.orders;
+  const nums = new Set(orders.map(o => o.num));
+  if (seen && orders.some(o => !seen.has(o.num))) beep();
+  seen = nums;
+  show(true); render();
+}
+
+function render() {
+  const counts = {all: orders.length};
+  orders.forEach(o => counts[o.status] = (counts[o.status] || 0) + 1);
+  $('cnt').textContent = counts.new ? '(' + counts.new + ' جديد)' : '';
+  document.title = counts.new ? '(' + counts.new + ') إدارة الطلبات' : 'إدارة الطلبات';
+  $('chips').innerHTML = [['all', 'الكل']].concat(Object.entries(STATUS)).map(([k, v]) =>
+    `<button class="chip ${filter === k ? 'on' : ''}" data-f="${esc(k)}">${esc(v)} (${counts[k] || 0})</button>`).join('');
+  const rows = orders.filter(o => filter === 'all' || o.status === filter);
+  $('list').innerHTML = rows.length ? rows.map(card).join('') : '<div class="empty">لا توجد طلبات 📭</div>';
+}
+
+function card(o) {
+  const items = (o.items || []).map(i => `<li>${esc(i.name)} × ${esc(i.qty)}</li>`).join('');
+  const opts = Object.entries(STATUS).map(([k, v]) => `<option value="${esc(k)}" ${o.status === k ? 'selected' : ''}>${esc(v)}</option>`).join('');
+  const ph = esc(o.phone);
+  return `<div class="card ${esc(o.status)}">
+    <div class="row"><span class="num">${esc(o.num)}</span><span class="dt">${esc(o.date)}</span></div>
+    <p><b>👤 ${esc(o.name)}</b> · <span dir="ltr">${ph}</span></p>
+    <p><span class="lbl">📍</span> ${esc(o.city)} - ${esc(o.area)}<br>${esc(o.addr)}</p>
+    <ul>${items}</ul>
+    ${o.note ? `<p><span class="lbl">📝</span> ${esc(o.note)}</p>` : ''}
+    <p class="lbl">التوصيل: ${esc(o.fee)} د.ل · الدفع: ${esc(PAY[o.pay] || o.pay)}</p>
+    <p class="tot">الإجمالي: ${esc(Number(o.total).toFixed(2))} د.ل</p>
+    <div class="acts">
+      <a class="call" href="tel:+${waNumber(o.phone)}">📞 اتصال</a>
+      <a class="wa" target="_blank" rel="noopener" href="https://wa.me/${waNumber(o.phone)}">💬 واتساب</a>
+      <select data-n="${esc(o.num)}">${opts}</select>
+    </div>
+  </div>`;
+}
+
+$('chips').onclick = e => { const f = e.target.dataset.f; if (f) { filter = f; render(); } };
+$('list').onchange = async e => {
+  const n = e.target.dataset.n; if (!n) return;
+  await api('status', {num: n, status: e.target.value, csrf});
+  load();
+};
+async function doLogin() {
+  $('err').textContent = '';
+  const {data} = await api('login', {pw: $('pw').value});
+  if (data.ok) { $('pw').value = ''; seen = null; try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch (e) {} load(); }
+  else $('err').textContent = data.msg || 'تعذر الدخول';
+}
+$('go').onclick = doLogin;
+$('pw').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+$('ref').onclick = load;
+$('out').onclick = async () => { await api('logout', {}); seen = null; show(false); };
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+load();
+setInterval(() => { if (!document.hidden) load(); }, 15000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script>
+</body>
+</html>
